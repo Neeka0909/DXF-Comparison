@@ -1,3 +1,4 @@
+using DxfCompare.Comparison;
 using netDxf;
 using netDxf.Entities;
 using Point2D = DxfCompare.Geometry.Point2D;
@@ -14,6 +15,14 @@ public static class SampleDxfFactory
         new(4, 4),
         new(4, 12),
         new(0, 12)
+    ];
+
+    public static readonly IReadOnlyList<Point2D> Rectangle100x50 =
+    [
+        new(0, 0),
+        new(100, 0),
+        new(100, 50),
+        new(0, 50)
     ];
 
     public static readonly IReadOnlyList<Point2D> OtherShape =
@@ -40,6 +49,12 @@ public static class SampleDxfFactory
         SaveR12(Path.Combine(directory, "reference-r12.dxf"), LShape);
         SaveR12(Path.Combine(directory, "rotated-90-r12.dxf"), Transform(LShape, 90, 0, 0, flipX: false, flipY: false));
         SaveR12(Path.Combine(directory, "flipped-horizontal-r12.dxf"), Transform(LShape, 0, 0, 0, flipX: true, flipY: false));
+
+        Save(Path.Combine(directory, "rect-100x50.dxf"), Rectangle100x50);
+        Save(Path.Combine(directory, "rect-edge-all-2mm.dxf"),
+            EdgeServiceApplicator.Apply(Rectangle100x50, EdgeServiceConfig.Uniform(2)));
+        Save(Path.Combine(directory, "rect-edge-top-2mm.dxf"),
+            EdgeServiceApplicator.Apply(Rectangle100x50, new EdgeServiceConfig { Top = 2 }));
 
         return directory;
     }

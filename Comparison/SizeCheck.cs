@@ -32,6 +32,9 @@ public sealed class SizeCheck
     public required double ReferenceHeight { get; init; }
     public required double CandidateWidth { get; init; }
     public required double CandidateHeight { get; init; }
+    public double? BaseReferenceWidth { get; init; }
+    public double? BaseReferenceHeight { get; init; }
+    public EdgeServiceConfig? EdgeService { get; init; }
     public double? ExpectedWidth { get; init; }
     public double? ExpectedHeight { get; init; }
     public bool Checked { get; init; }
@@ -39,19 +42,30 @@ public sealed class SizeCheck
     public bool DimensionsSwapped { get; init; }
     public string Summary { get; init; } = "Not checked";
 
-    public static SizeCheck Measure(IReadOnlyList<Point2D> reference, IReadOnlyList<Point2D> candidate)
+    public static SizeCheck Measure(
+        IReadOnlyList<Point2D> reference,
+        IReadOnlyList<Point2D> candidate,
+        IReadOnlyList<Point2D>? baseReference = null,
+        EdgeServiceConfig? edgeService = null)
     {
         BoundingBox refBox = BoundingBox.From(reference);
         BoundingBox candBox = BoundingBox.From(candidate);
+        BoundingBox? baseBox = baseReference is not null ? BoundingBox.From(baseReference) : null;
+
         return new SizeCheck
         {
             ReferenceWidth = refBox.Width,
             ReferenceHeight = refBox.Height,
             CandidateWidth = candBox.Width,
             CandidateHeight = candBox.Height,
+            BaseReferenceWidth = baseBox?.Width,
+            BaseReferenceHeight = baseBox?.Height,
+            EdgeService = edgeService?.IsActive == true ? edgeService : null,
             Checked = false,
             Passed = true,
-            Summary = "No expected size given"
+            Summary = edgeService?.IsActive == true
+                ? $"Base size {baseBox?.Width:0.####} x {baseBox?.Height:0.####}; after edge service {refBox.Width:0.####} x {refBox.Height:0.####}"
+                : "No expected size given"
         };
     }
 
@@ -60,8 +74,6 @@ public sealed class SizeCheck
         (bool refOk, bool refSwapped) = Matches(ReferenceWidth, ReferenceHeight, expectedWidth, expectedHeight, tolerance);
         (bool candOk, _) = Matches(CandidateWidth, CandidateHeight, expectedWidth, expectedHeight, tolerance);
 
-        // Candidate may be rotated 90°, so its as-drawn box can be swapped.
-        // If the polygons already matched, the shared outline size is the reference box.
         bool passed = refOk;
         bool swapped = refSwapped;
         string summary;
@@ -91,20 +103,64 @@ public sealed class SizeCheck
                        "(different because of rotation; outline size still matches)";
         }
 
-        return new SizeCheck
+        return CopyWithExpected(expectedWidth, expectedHeight, passed, swapped, summary);
+    }
+
+    public SizeCheck AgainstEdgeService(EdgeServiceConfig edgeService, double tolerance)
+    {
+        if (BaseReferenceWidth is null || BaseReferenceHeight is null)
+            throw new InvalidOperationException("Base reference size is required for edge service validation.");
+
+        (double expectedW, double expectedH) = edgeService.ExpandSize(BaseReferenceWidth.Value, BaseReferenceHeight.Value);
+
+        // After edge service, validate the candidate (expanded shape) against computed expected size.
+        (bool candOk, bool candSwapped) = Matches(CandidateWidth, CandidateHeight, expectedW, expectedH, tolerance);
+        (bool refOk, _) = Matches(ReferenceWidth, ReferenceHeight, expectedW, expectedH, tolerance);
+
+        bool passed = candOk && refOk;
+        string summary;
+
+        if (!passed)
+        {
+            summary =
+                $"FAIL — base {Format(BaseReferenceWidth.Value)} x {Format(BaseReferenceHeight.Value)} + " +
+                $"edge service ({edgeService.Describe()}) => expected {Format(expectedW)} x {Format(expectedH)}, " +
+                $"candidate measures {Format(CandidateWidth)} x {Format(CandidateHeight)}";
+        }
+        else if (candSwapped)
+        {
+            summary =
+                $"PASS — base {Format(BaseReferenceWidth.Value)} x {Format(BaseReferenceHeight.Value)} + " +
+                $"edge service ({edgeService.Describe()}) => {Format(expectedW)} x {Format(expectedH)} " +
+                $"(width/height swapped in drawing)";
+        }
+        else
+        {
+            summary =
+                $"PASS — base {Format(BaseReferenceWidth.Value)} x {Format(BaseReferenceHeight.Value)} + " +
+                $"edge service ({edgeService.Describe()}) => {Format(expectedW)} x {Format(expectedH)}";
+        }
+
+        return CopyWithExpected(expectedW, expectedH, passed, candSwapped, summary);
+    }
+
+    private SizeCheck CopyWithExpected(double expectedW, double expectedH, bool passed, bool swapped, string summary) =>
+        new()
         {
             ReferenceWidth = ReferenceWidth,
             ReferenceHeight = ReferenceHeight,
             CandidateWidth = CandidateWidth,
             CandidateHeight = CandidateHeight,
-            ExpectedWidth = expectedWidth,
-            ExpectedHeight = expectedHeight,
+            BaseReferenceWidth = BaseReferenceWidth,
+            BaseReferenceHeight = BaseReferenceHeight,
+            EdgeService = EdgeService,
+            ExpectedWidth = expectedW,
+            ExpectedHeight = expectedH,
             Checked = true,
             Passed = passed,
             DimensionsSwapped = swapped,
             Summary = summary
         };
-    }
 
     private static (bool Ok, bool Swapped) Matches(double width, double height, double expectedW, double expectedH, double tolerance)
     {
