@@ -1,9 +1,9 @@
 # DxfCompare — Technical Documentation
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Project:** SPIL DXF Validation  
 **Platform:** .NET 9.0  
-**Last updated:** August 2026
+**Last updated:** September 2026
 
 ---
 
@@ -11,7 +11,11 @@
 
 **DxfCompare** is a command-line application that validates whether two DXF files contain the same single 2D polygon outline, even when one drawing is rotated, flipped (reflected), or translated relative to the other.
 
-In addition to shape comparison, the tool optionally validates **expected width and height** against the measured outline of the reference polygon.
+The tool also supports:
+
+- **Size validation** — compare measured width/height against expected dimensions
+- **Edge service** — expand the base shape outward per side before comparing to an edge-service DXF
+- **Multi-layer DXF** — select which layer to read from a reference file that contains shapes on multiple layers
 
 ### 1.1 Key capabilities
 
@@ -20,6 +24,9 @@ In addition to shape comparison, the tool optionally validates **expected width 
 | Shape congruence | Determines if two polygons are geometrically identical under rotation and reflection |
 | Transform detection | Reports rotation angle (CCW/CW) and flip direction (horizontal or vertical) |
 | Size validation | Compares measured bounding-box dimensions against user-supplied width and height |
+| Edge service | Expands base shape per side (all-around or top/bottom/left/right) before comparison |
+| Layer selection | Reads a specific layer from multi-layer reference or candidate DXF files |
+| Layer listing | Lists all layers that contain closed polygon geometry |
 | Legacy DXF support | Reads ASCII AutoCAD R12 (AC1009) files via a built-in parser |
 | Modern DXF support | Reads AutoCAD 2000+ files via the **netDxf** library |
 | Collinear cleanup | Removes duplicate and collinear vertices before comparison |
@@ -27,7 +34,7 @@ In addition to shape comparison, the tool optionally validates **expected width 
 ### 1.2 Out of scope
 
 - Scale differences (shapes must be drawn at the same scale)
-- Multiple shapes per file (only the largest closed polygon is used)
+- Multiple shapes on the same layer (only the largest closed polygon on the selected layer is used)
 - Curved edges (arcs, splines, bulged polyline segments are not supported)
 - Binary DXF files
 - 3D geometry (only X/Y coordinates are used)
@@ -37,46 +44,50 @@ In addition to shape comparison, the tool optionally validates **expected width 
 ## 2. System architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Program.cs (CLI)                        │
-│  Argument parsing · Output formatting · Self-test orchestration │
-└────────────┬───────────────────────────────┬────────────────────┘
-             │                               │
-             ▼                               ▼
-┌────────────────────────┐      ┌───────────────────────────────┐
-│   DxfPolygonReader     │      │      Comparison layer         │
-│  ┌──────────────────┐  │      │  ┌─────────────────────────┐  │
-│  │ netDxf (AC2000+)   │  │      │  │   PolygonComparer       │  │
-│  └──────────────────┘  │      │  │   Shape match + transform │  │
-│  ┌──────────────────┐  │      │  └─────────────────────────┘  │
-│  │ AsciiDxfParser   │  │      │  ┌─────────────────────────┐  │
-│  │ (R12 / fallback) │  │      │  │   SizeCheck             │  │
-│  └──────────────────┘  │      │  │   Width/height validate │  │
-└────────────┬───────────┘      │  └─────────────────────────┘  │
-             │                  └───────────────────────────────┘
-             ▼
-┌────────────────────────┐
-│   Geometry / Point2D   │
-└────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            Program.cs (CLI)                              │
+│   Argument parsing · Layer/edge options · Output · Self-test runner    │
+└───────┬──────────────────────────────┬───────────────────────────────────┘
+        │                              │
+        ▼                              ▼
+┌───────────────────────┐    ┌───────────────────────────────────────────┐
+│   DxfPolygonReader    │    │              Comparison layer               │
+│  ┌─────────────────┐  │    │  ┌─────────────────┐  ┌─────────────────┐  │
+│  │ netDxf (AC2000+)│  │    │  │ PolygonComparer │  │ EdgeService     │  │
+│  └─────────────────┘  │    │  │ Shape + transform│  │ Applicator      │  │
+│  ┌─────────────────┐  │    │  └─────────────────┘  └─────────────────┘  │
+│  │ AsciiDxfParser  │  │    │  ┌─────────────────┐  ┌─────────────────┐  │
+│  │ (R12 / fallback)│  │    │  │ SizeCheck       │  │ EdgeService     │  │
+│  └─────────────────┘  │    │  │ Width/height    │  │ Config          │  │
+│  ListLayers()         │    │  └─────────────────┘  └─────────────────┘  │
+└───────────┬───────────┘    └───────────────────────────────────────────┘
+            ▼
+┌───────────────────────┐
+│  Geometry / Point2D   │
+└───────────────────────┘
 ```
 
 ### 2.1 Project structure
 
 ```
 SPIL DXF Validation/
-├── Program.cs                    Entry point, CLI, output, self-tests
-├── DxfCompare.csproj             .NET 9 project file
+├── Program.cs                      Entry point, CLI, output, self-tests
+├── DxfCompare.csproj               .NET 9 project file
+├── TECHNICAL_DOCUMENTATION.md      This document
 ├── Geometry/
-│   └── Point2D.cs                2D point struct with vector math
+│   └── Point2D.cs                  2D point struct with vector math
 ├── Dxf/
-│   ├── DxfPolygonReader.cs       Unified DXF reader (netDxf + fallback)
-│   ├── AsciiDxfParser.cs         ASCII DXF parser for R12 and legacy files
-│   └── SampleDxfFactory.cs       Sample file generator for testing
+│   ├── DxfPolygonReader.cs         Unified DXF reader (netDxf + fallback)
+│   ├── AsciiDxfParser.cs           ASCII DXF parser for R12 and legacy files
+│   ├── DxfLayerSummary.cs          Layer listing model
+│   └── SampleDxfFactory.cs         Sample file generator for testing
 ├── Comparison/
-│   ├── PolygonComparer.cs        Congruence detection and transform fit
-│   ├── SizeCheck.cs              Bounding-box size validation
-│   └── ComparisonResult.cs       Shape comparison result model
-└── samples/                      Generated test DXF files
+│   ├── PolygonComparer.cs          Congruence detection and transform fit
+│   ├── SizeCheck.cs                Bounding-box size validation
+│   ├── EdgeServiceConfig.cs        Per-side edge service values
+│   ├── EdgeServiceApplicator.cs    Polygon outward expansion
+│   └── ComparisonResult.cs         Shape comparison result model
+└── samples/                        Generated test DXF files
 ```
 
 ### 2.2 Dependencies
@@ -91,15 +102,32 @@ No other third-party libraries are used.
 
 ## 3. DXF input requirements
 
-Each DXF file must contain **one primary closed polygon**. The tool extracts geometry in this order:
+Each DXF file must contain at least **one closed polygon** on the selected layer (or on any layer if none is specified). Geometry is extracted in this order:
 
 1. **Polyline2D** (lightweight polyline) — preferred
 2. **Polyline3D** — X/Y projected to 2D
 3. **Closed loop of Line entities** — stitched into a polygon if endpoints connect
 
-If multiple closed polygons exist, the one with the **largest absolute area** is selected.
+If multiple closed polygons exist on the same layer, the one with the **largest absolute area** is selected.
 
-### 3.1 Supported DXF versions
+### 3.1 Multi-layer DXF files
+
+When a reference DXF contains shapes on several layers (e.g. layout, dimensions, cut profile), use `--reference-layer` / `--layer` to select which layer holds the shape to compare.
+
+```text
+dotnet run -- --list-layers reference.dxf
+dotnet run -- reference.dxf candidate.dxf --layer LAYER2
+```
+
+| Scenario | Command |
+|---|---|
+| Reference has 3 layers, shape on LAYER2 | `--layer LAYER2` on reference |
+| Candidate is single-layer | No `--candidate-layer` needed |
+| Both files multi-layer | `--layer` + optional `--candidate-layer` |
+
+Layer names are matched case-insensitively. Each entity's DXF group code **8** (layer name) is read by both parsers.
+
+### 3.2 Supported DXF versions
 
 | Version | Format | Reader |
 |---|---|---|
@@ -107,39 +135,42 @@ If multiple closed polygons exist, the one with the **largest absolute area** is
 | AutoCAD 2000+ | ASCII / binary | `netDxf` (with ASCII fallback) |
 | Binary R12 | Binary | **Not supported** — re-save as ASCII DXF |
 
-### 3.2 DXF reading pipeline
+### 3.3 DXF reading pipeline
 
 ```
-File path
+File path  [+ optional layer name]
     │
     ▼
 Check DXF version (DxfDocument.CheckDxfFileVersion)
     │
-    ├── Version < AutoCad2000 ──► AsciiDxfParser.ReadPolygons()
+    ├── Version < AutoCad2000 ──► AsciiDxfParser.ReadPolygonCandidates()
     │
     └── Version >= AutoCad2000
             │
-            ├── netDxf load succeeds ──► Extract Polylines2D, Polylines3D, Lines
+            ├── netDxf load succeeds ──► Extract Polylines2D, Polylines3D, Lines (with layer)
             │
-            └── netDxf fails ──► AsciiDxfParser.ReadPolygons() (fallback)
+            └── netDxf fails ──► AsciiDxfParser (fallback)
     │
     ▼
-SelectPrimaryPolygon() — largest area wins
+Filter by layer (if --layer specified)
+    │
+    ▼
+SelectPrimaryPolygon() — largest area on that layer
     │
     ▼
 List<Point2D> vertex ring
 ```
 
-### 3.3 ASCII DXF parser (R12)
+### 3.4 ASCII DXF parser (R12)
 
 The built-in `AsciiDxfParser` handles:
 
-- `POLYLINE` / `VERTEX` / `SEQEND` (classic R12 polylines)
-- `LWPOLYLINE` (lightweight polylines in newer ASCII files)
-- `LINE` entities
-- `INSERT` block references (one level of explosion with transform)
+- `POLYLINE` / `VERTEX` / `SEQEND` (classic R12 polylines, layer on POLYLINE)
+- `LWPOLYLINE` (lightweight polylines, group code 8)
+- `LINE` entities (group code 8)
+- `INSERT` block references (exploded with transform)
 
-Block inserts are resolved with scale, rotation, and translation applied to child entities. Polyface and spline-frame vertices (flag bits 1, 16, 128) are skipped.
+Block inserts are resolved with scale, rotation, and translation. Polyface and spline-frame vertices (flag bits 1, 16, 128) are skipped.
 
 ---
 
@@ -157,7 +188,7 @@ Before comparison, both polygons pass through `PolygonComparer.Normalize()`:
 
 #### Phase 1 — Edge length filter
 
-For each cyclic shift of polygon B (and its reversed winding), edge lengths are compared to polygon A. Shifts where any edge length differs by more than `lengthTol` are rejected early.
+For each cyclic shift of polygon B (and its reversed winding), edge lengths are compared to polygon A.
 
 ```
 lengthTol = max(1e-8, relativeTolerance × perimeter / vertexCount)
@@ -165,94 +196,107 @@ lengthTol = max(1e-8, relativeTolerance × perimeter / vertexCount)
 
 #### Phase 2 — Procrustes rotation fit
 
-For each surviving shift, both polygons are centered at their centroid. A least-squares rotation is computed using the Kabsch/Procrustes method:
+Both polygons are centered at their centroid. Rotation is computed via Kabsch/Procrustes:
 
 ```
 angle = atan2(Σ cross, Σ dot)
 ```
 
-where `cross` and `dot` are summed over corresponding centered vertex pairs.
-
-The root-mean-square deviation (RMSD) after rotation is the **fit error**. A match is declared when:
-
-```
-RMSD <= absTol
-absTol = max(1e-8, relativeTolerance × RmsRadius)
-```
+Match when `RMSD <= absTol`, where `absTol = max(1e-8, relativeTolerance × RmsRadius)`.
 
 #### Phase 3 — Reflection handling
-
-Two flip modes are tested:
 
 | Mode | Transform applied to reference |
 |---|---|
 | Horizontal flip | Mirror over vertical axis: `(x, y) → (-x, y)` |
-| Vertical flip | Mirror over horizontal axis: `(x, y) → (-y, y)` |
-
-After flipping, the same rotation fit is applied. The flip mode with the lowest RMSD is selected.
+| Vertical flip | Mirror over horizontal axis: `(x, y) → (x, -y)` |
 
 ### 4.3 Transform reporting
 
-When a match is found, the tool reports:
-
 | Field | Description |
 |---|---|
-| `RotationDegreesCcw` | Counter-clockwise rotation from reference to candidate (0°–360°) |
+| `RotationDegreesCcw` | Counter-clockwise rotation (0°–360°) |
 | `RotationDegreesCw` | Clockwise equivalent |
 | `IsFlipped` | Whether a reflection was required |
 | `FlipSide` | `None`, `Horizontal`, or `Vertical` |
-| `FlipDescription` | Human-readable flip explanation |
-| `MirrorAxisDegrees` | `0` (horizontal axis) or `90` (vertical axis) |
-| `TransformSummary` | Combined description, e.g. *"Flipped horizontally, then rotated 35° CCW"* |
+| `TransformSummary` | e.g. *"Flipped horizontally, then rotated 35° CCW"* |
 | `FitError` | RMSD after best-fit alignment |
-
-### 4.4 Invariances handled automatically
-
-| Transformation | Handled? | Method |
-|---|---|---|
-| Translation | Yes | Centroid removal before fit |
-| Rotation | Yes | Cyclic shift + Procrustes angle |
-| Reflection (flip) | Yes | Horizontal/vertical mirror test |
-| Different start vertex | Yes | Cyclic shift over all vertices |
-| Collinear extra vertices | Yes | Preprocessing step |
-| Clockwise vs counter-clockwise winding | Yes | Winding normalization + reversed mapping |
 
 ---
 
-## 5. Size validation
+## 5. Edge service
 
-When the user supplies expected width and height, the tool validates the **axis-aligned bounding box** of the normalized reference polygon.
+Edge service simulates adding material allowance around the base shape before comparing to a candidate DXF that already includes edge service.
 
-### 5.1 Measurement
+### 5.1 Per-side expansion
+
+Each edge is classified by its outward normal direction and offset by the corresponding value:
+
+| Side | Normal direction | CLI option |
+|---|---|---|
+| Top | +Y | `--edge-top` |
+| Bottom | −Y | `--edge-bottom` |
+| Left | −X | `--edge-left` |
+| Right | +X | `--edge-right` |
+| All sides | All of the above | `--edge-service` |
+
+### 5.2 Size formulas
+
+Given base bounding-box width `W` and height `H`:
+
+```
+finalWidth  = W + left + right
+finalHeight = H + top + bottom
+```
+
+| Base size | Edge service | Result |
+|---|---|---|
+| 100 × 50 mm | `--edge-service 2` (all sides) | **104 × 54 mm** |
+| 100 × 50 mm | `--edge-top 2` (top only) | **100 × 52 mm** |
+| 100 × 50 mm | `--edge-top 2 --edge-left 1` | **101 × 52 mm** |
+
+### 5.3 Comparison workflow with edge service
+
+1. Read **reference DXF** as the base shape (optionally from a specific layer)
+2. Apply edge service expansion mathematically to the reference polygon
+3. Compare expanded reference vs **candidate DXF** (which should already include edge service)
+4. Auto-validate candidate size against `base + edge service` dimensions
+
+Override expected size manually with `--width` / `--height` if needed.
+
+### 5.4 Algorithm
+
+Each polygon edge is offset outward along its normal by the side-specific value. New vertices are computed by intersecting adjacent offset edge lines (miter join).
+
+---
+
+## 6. Size validation
+
+When the user supplies expected width and height (or edge service is active), the tool validates the **axis-aligned bounding box**.
+
+### 6.1 Measurement
 
 ```
 width  = max(X) - min(X)
 height = max(Y) - min(Y)
 ```
 
-Both reference and candidate bounding boxes are measured and reported. Size validation uses the **reference** dimensions.
-
-### 5.2 Matching rules
-
-Expected dimensions match if either orientation fits within tolerance:
+### 6.2 Matching rules
 
 | Check | Condition |
 |---|---|
 | Direct | `\|measuredW - expectedW\| ≤ tol` AND `\|measuredH - expectedH\| ≤ tol` |
 | Swapped | `\|measuredW - expectedH\| ≤ tol` AND `\|measuredH - expectedW\| ≤ tol` |
 
-Swapped dimensions are accepted to support cases where the user enters width/height in a different orientation than the drawing axes (e.g. after a 90° rotation the as-drawn box may read 12 × 10 while the outline size is still 10 × 12).
+Swapped dimensions are accepted when the drawing is rotated 90°.
 
-### 5.3 Tolerance
+### 6.3 Tolerance
 
 ```
 sizeTol = max(sizeToleranceAbs, relativeTolerance × max(expectedWidth, expectedHeight))
 ```
 
-- `--size-tolerance` sets the absolute floor (default `0`)
-- `--tolerance` also scales the size tolerance proportionally
-
-### 5.4 Overall pass/fail
+### 6.4 Overall pass/fail
 
 | Shape match | Size check | Result | Exit code |
 |---|---|---|---|
@@ -262,133 +306,173 @@ sizeTol = max(sizeToleranceAbs, relativeTolerance × max(expectedWidth, expected
 
 ---
 
-## 6. Command-line reference
+## 7. Command-line reference
 
-### 6.1 Usage
+### 7.1 Usage
 
 ```text
 DxfCompare <reference.dxf> <candidate.dxf> [options]
 DxfCompare <reference.dxf> <candidate.dxf> <width> <height>
+DxfCompare <reference.dxf> <candidate.dxf> --layer LAYER2
+DxfCompare --list-layers <file.dxf>
 DxfCompare --write-samples [folder]
 DxfCompare --self-test
 DxfCompare --help
 ```
 
-### 6.2 Options
+### 7.2 Options
 
 | Option | Alias | Default | Description |
 |---|---|---|---|
-| `--width <n>` | `-w` | — | Expected shape width (drawing units) |
-| `--height <n>` | — | — | Expected shape height (drawing units) |
-| `--ask-size` | — | off | Print measured sizes and prompt for width/height |
-| `--size-tolerance <n>` | — | `0` | Absolute size tolerance (drawing units) |
+| `--reference-layer <name>` | `--layer` | all layers | Layer to read from reference DXF |
+| `--candidate-layer <name>` | — | all layers | Layer to read from candidate DXF |
+| `--list-layers <file>` | — | — | List layers with closed polygon geometry |
+| `--edge-service <n>` | — | — | Edge service on all sides (mm/units) |
+| `--edge-top <n>` | — | — | Edge service on top side |
+| `--edge-bottom <n>` | — | — | Edge service on bottom side |
+| `--edge-left <n>` | — | — | Edge service on left side |
+| `--edge-right <n>` | — | — | Edge service on right side |
+| `--width <n>` | `-w` | — | Expected final width (overrides edge service calc) |
+| `--height <n>` | — | — | Expected final height |
+| `--ask-size` | — | off | Prompt for width/height after measuring |
+| `--size-tolerance <n>` | — | `0` | Absolute size tolerance |
 | `--tolerance <n>` | — | `0.0001` | Relative geometry tolerance |
-| `--json` | — | off | Output results as JSON |
+| `--json` | — | off | JSON output |
 | `--write-samples [dir]` | — | `./samples` | Generate sample DXF files |
 | `--self-test` | — | — | Run built-in test suite |
 | `--help` | `-h` | — | Show usage |
 
-### 6.3 Exit codes
+### 7.3 Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | Success — shapes match (and size matches if provided) |
-| `1` | Failure — shapes do not match, or size validation failed |
-| `2` | Error — invalid arguments, missing file, or unsupported format |
+| `0` | Shapes match (and size matches when validated) |
+| `1` | Shapes or size do not match |
+| `2` | Invalid arguments, missing file, or unsupported format |
 
-### 6.4 Examples
+### 7.4 Examples
 
-**Basic shape comparison:**
+**Basic comparison:**
 
 ```text
 dotnet run -- reference.dxf candidate.dxf
 ```
 
-**Shape + size validation:**
+**Multi-layer reference — compare LAYER2 only:**
+
+```text
+dotnet run -- --list-layers multi-layer-3.dxf
+dotnet run -- multi-layer-3.dxf single-layer-shape.dxf --layer LAYER2
+```
+
+**Flipped shape:**
+
+```text
+dotnet run -- single-layer-shape.dxf single-layer-shape-flipped.dxf
+```
+
+**Edge service — all sides 2 mm:**
+
+```text
+dotnet run -- rect-100x50.dxf rect-edge-all-2mm.dxf --edge-service 2
+```
+
+**Edge service — top only 2 mm:**
+
+```text
+dotnet run -- rect-100x50.dxf rect-edge-top-2mm.dxf --edge-top 2
+```
+
+**Size validation:**
 
 ```text
 dotnet run -- reference.dxf candidate.dxf --width 10 --height 12
 dotnet run -- reference.dxf candidate.dxf 10 12
 ```
 
-**Interactive size entry:**
+**Combined — layer + edge service:**
 
 ```text
-dotnet run -- reference.dxf candidate.dxf --ask-size
+dotnet run -- base-3-layers.dxf edge-result.dxf --layer LAYER2 --edge-service 2
 ```
 
-**JSON output for automation:**
-
-```text
-dotnet run -- reference.dxf candidate.dxf --width 10 --height 12 --json
-```
-
-**Generate sample files:**
+**Generate all sample files:**
 
 ```text
 dotnet run -- --write-samples
+dotnet run -- --write-samples "D:\SPIL - Repo\SPIL DXF Validation\samples"
 ```
 
-**Run self-tests:**
+**JSON output:**
 
 ```text
-dotnet run -- --self-test
+dotnet run -- reference.dxf candidate.dxf --layer LAYER2 --json
 ```
 
 ---
 
-## 7. Output formats
+## 8. Output formats
 
-### 7.1 Text output (default)
+### 8.1 Text output (default)
 
 ```text
 DXF polygon comparison
 ----------------------------------------
-Reference : C:\drawings\shape-a.dxf
-Candidate : C:\drawings\shape-b.dxf
+Reference : D:\drawings\multi-layer-3.dxf
+Ref layer : LAYER2
+Candidate : D:\drawings\single-layer-shape.dxf
 Result    : MATCH (shape and size)
 Vertices  : 6
+Edge svc  : 2 on all sides
 Transform : Rotated 90° CCW
 Flipped   : No
 Flip side : Not flipped
 Rotation  : 90° CCW  (270° CW)
-Size (ref): 10 x 12
-Size (cand): 12 x 10
-Expected  : 10 x 12
-Size check: PASS — expected 10 x 12, measured 10 x 12
+Base size : 100 x 50
+Size (ref): 104 x 54
+Size (cand): 104 x 54
+Expected  : 104 x 54
+Size check: PASS — base 100 x 50 + edge service (2 on all sides) => 104 x 54
 Fit error : 1.422E-14
 Details   : The DXF shapes match (same polygon, allowing rotation and/or flipping).
 ```
 
-### 7.2 JSON output (`--json`)
+### 8.2 JSON output (`--json`)
 
 ```json
 {
-  "reference": "C:\\drawings\\shape-a.dxf",
-  "candidate": "C:\\drawings\\shape-b.dxf",
+  "reference": "D:\\drawings\\multi-layer-3.dxf",
+  "referenceLayer": "LAYER2",
+  "candidate": "D:\\drawings\\result.dxf",
+  "candidateLayer": null,
   "match": true,
   "shapeMatch": true,
   "vertexCount": 6,
+  "edgeService": {
+    "top": 2,
+    "bottom": 2,
+    "left": 2,
+    "right": 2,
+    "description": "2 on all sides"
+  },
   "flipped": false,
   "flipSide": "None",
-  "flipDescription": "Not flipped",
-  "rotationDegreesCcw": 90,
-  "rotationDegreesCw": 270,
-  "mirrorAxisDegrees": 0,
-  "transform": "Rotated 90° CCW",
+  "rotationDegreesCcw": 0,
+  "transform": "Same orientation (no rotation, no flip)",
   "size": {
-    "referenceWidth": 10,
-    "referenceHeight": 12,
-    "candidateWidth": 12,
-    "candidateHeight": 10,
-    "expectedWidth": 10,
-    "expectedHeight": 12,
+    "baseReferenceWidth": 100,
+    "baseReferenceHeight": 50,
+    "referenceWidth": 104,
+    "referenceHeight": 54,
+    "candidateWidth": 104,
+    "candidateHeight": 54,
+    "expectedWidth": 104,
+    "expectedHeight": 54,
     "checkedSize": true,
     "passed": true,
-    "dimensionsSwapped": false,
-    "summary": "PASS — expected 10 x 12, measured 10 x 12"
+    "summary": "PASS — base 100 x 50 + edge service (2 on all sides) => 104 x 54"
   },
-  "fitError": 1.421e-14,
+  "fitError": 0,
   "message": "The DXF shapes match (same polygon, allowing rotation and/or flipping)."
 }
 ```
@@ -397,25 +481,25 @@ The top-level `match` field is `true` only when both shape and size checks pass.
 
 ---
 
-## 8. Build and deployment
+## 9. Build and deployment
 
-### 8.1 Prerequisites
+### 9.1 Prerequisites
 
 - .NET 9.0 SDK or later
 
-### 8.2 Build
+### 9.2 Build
 
 ```text
 dotnet build
 ```
 
-### 8.3 Run (development)
+### 9.3 Run (development)
 
 ```text
 dotnet run -- <args>
 ```
 
-### 8.4 Publish (standalone executable)
+### 9.4 Publish (standalone executable)
 
 ```text
 dotnet publish -c Release -r win-x64 --self-contained
@@ -423,23 +507,15 @@ dotnet publish -c Release -r win-x64 --self-contained
 
 Output: `bin/Release/net9.0/win-x64/publish/DxfCompare.exe`
 
-For Linux:
-
-```text
-dotnet publish -c Release -r linux-x64 --self-contained
-```
-
 ---
 
-## 9. Testing
+## 10. Testing
 
-### 9.1 Self-test suite
+### 10.1 Self-test suite
 
 ```text
 dotnet run -- --self-test
 ```
-
-The suite covers:
 
 | Category | Tests |
 |---|---|
@@ -448,8 +524,10 @@ The suite covers:
 | Negative | Different shape (expected no match) |
 | R12 format | Reference, rotated, flipped in AutoCAD 12 ASCII DXF |
 | Size validation | 10×12 pass, 12×10 swapped pass, 9×12 fail |
+| Edge service | All-around 104×54, top-only 100×52, full compare flow |
+| Multi-layer | List layers, LAYER2 match, LAYER1 no match |
 
-### 9.2 Sample files
+### 10.2 Sample files
 
 Generated by `--write-samples`:
 
@@ -467,47 +545,55 @@ Generated by `--write-samples`:
 | `reference-r12.dxf` | R12 format reference |
 | `rotated-90-r12.dxf` | R12 format, rotated 90° |
 | `flipped-horizontal-r12.dxf` | R12 format, flipped |
+| `rect-100x50.dxf` | Rectangle 100 × 50 (edge service base) |
+| `rect-edge-all-2mm.dxf` | Rectangle after 2 mm all-side edge service (104 × 54) |
+| `rect-edge-top-2mm.dxf` | Rectangle after 2 mm top edge service (100 × 52) |
+| `multi-layer-3.dxf` | 3 layers: LAYER1 (other), **LAYER2 (L-shape)**, LAYER3 (other) |
+| `single-layer-shape.dxf` | Single-layer L-shape on layer 0 |
+| `single-layer-shape-flipped.dxf` | Same L-shape, horizontally flipped |
 
 ---
 
-## 10. Limitations and known constraints
+## 11. Limitations and known constraints
 
-### 10.1 Geometry
+### 11.1 Geometry
 
-- **Straight edges only.** Bulged polyline segments (arcs) are treated as straight lines between vertices.
-- **Single polygon per file.** If a DXF contains multiple closed shapes, only the largest by area is compared.
-- **Same scale required.** The tool does not normalize by perimeter; shapes drawn at different scales will not match.
-- **2D only.** Z coordinates from Polyline3D are ignored; only X and Y are used.
+- **Straight edges only.** Bulged polyline segments are treated as straight lines between vertices.
+- **One polygon per layer.** If a layer has multiple closed shapes, only the largest by area is used.
+- **Same scale required.** Shapes drawn at different scales will not match.
+- **2D only.** Z coordinates from Polyline3D are ignored.
 
-### 10.2 File format
+### 11.2 File format
 
-- **Binary DXF is not supported.** Files must be saved as ASCII DXF.
-- **Block references** in the ASCII parser are exploded one level deep (nested blocks up to depth 32).
+- **Binary DXF is not supported.** Re-save as ASCII DXF from CAD software.
+- **Block references** in the ASCII parser are exploded up to depth 32.
 - **Hatches, splines, circles, arcs** as standalone entities are not read.
 
-### 10.3 Size validation
+### 11.3 Size and edge service
 
-- Size is measured as the **axis-aligned bounding box**, not the true oriented minimum bounding rectangle.
-- For non-rectangular shapes (e.g. L-shapes), width and height refer to the overall extent in X and Y, not individual leg dimensions.
+- Size is the **axis-aligned bounding box**, not oriented minimum bounding rectangle.
+- For L-shapes, width/height are overall X/Y extents, not individual leg dimensions.
+- Edge service uses **per-edge normal offset** with miter joins at corners.
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 | Error / symptom | Likely cause | Resolution |
 |---|---|---|
 | `DXF file not found` | Invalid path | Verify file path and permissions |
 | `No closed polygon found` | Shape not closed or wrong entity type | Draw as closed polyline or connected lines |
-| `Binary DXF is not supported` | File saved in binary format | Re-save as ASCII DXF from CAD software |
-| `Vertex counts differ` | Different shapes or missing vertices | Verify both files represent the same outline |
-| `SHAPE MATCH, SIZE FAIL` | Outline correct but dimensions wrong | Check expected width/height and drawing units |
+| `No closed polygon found on layer 'X'` | Wrong layer name or no shape on that layer | Run `--list-layers` to see available layers |
+| `Binary DXF is not supported` | File saved in binary format | Re-save as ASCII DXF |
+| `Vertex counts differ` | Different shapes | Verify both files represent the same outline |
+| `SHAPE MATCH, SIZE FAIL` | Wrong dimensions or edge service values | Check `--width`/`--height` or edge service settings |
 | Low fit error but no match | Floating-point edge case | Increase `--tolerance` slightly |
 
 ---
 
-## 12. Algorithm reference (collinear removal)
+## 13. Algorithm reference
 
-A vertex is removed when the normalized cross product of its adjacent edges is near zero **and** the dot product is positive (continuing straight line, not a 180° fold):
+### 13.1 Collinear vertex removal
 
 ```
 v1 = normalize(P[i] - P[i-1])
@@ -515,19 +601,9 @@ v2 = normalize(P[i+1] - P[i])
 collinear = |v1 × v2| < tolerance  AND  v1 · v2 > 0
 ```
 
-Duplicate vertices (distance < `1e-8`) and zero-length edges are also removed.
+### 13.2 Edge service offset
 
----
-
-## 13. Future enhancement considerations
-
-Potential improvements not yet implemented:
-
-- Oriented minimum bounding rectangle for size validation
-- Perimeter-normalized comparison for scale-invariant matching
-- Support for bulged polyline arcs (discretized into line segments)
-- Batch mode (compare one reference against many candidates)
-- Configuration file for default tolerances and expected dimensions
+For each edge, outward normal `n` is computed from CCW winding. Offset distance is selected by dominant normal component (top/bottom/left/right). Adjacent offset lines are intersected to form new vertices.
 
 ---
 
@@ -535,13 +611,15 @@ Potential improvements not yet implemented:
 
 | Term | Definition |
 |---|---|
-| **Congruent** | Same shape and size; identical under rotation, translation, and reflection |
-| **CCW** | Counter-clockwise rotation (positive angle in standard math convention) |
-| **RMSD** | Root mean square deviation — average point distance after alignment |
-| **Bounding box** | Smallest axis-aligned rectangle enclosing all vertices |
+| **Congruent** | Same shape and size under rotation, translation, and reflection |
+| **CCW** | Counter-clockwise rotation |
+| **Edge service** | Material allowance added outward around a shape perimeter |
+| **Layer** | DXF drawing layer (group code 8) separating entity groups |
+| **RMSD** | Root mean square deviation after alignment |
+| **Bounding box** | Axis-aligned rectangle enclosing all vertices |
 | **R12 / AC1009** | AutoCAD Release 12 DXF format |
-| **Procrustes fit** | Optimal rotation alignment minimizing sum of squared distances |
+| **Procrustes fit** | Optimal rotation minimizing sum of squared distances |
 
 ---
 
-*Document generated for the SPIL DXF Validation project.*
+*Document maintained for the SPIL DXF Validation project.*

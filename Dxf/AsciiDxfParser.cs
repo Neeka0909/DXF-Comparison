@@ -9,13 +9,13 @@ namespace DxfCompare.Dxf;
 /// </summary>
 internal static class AsciiDxfParser
 {
-    public static List<List<Point2D>> ReadPolygons(string filePath)
+    public static List<DxfPolygonReader.LayerPolygonCandidate> ReadPolygonCandidates(string filePath)
     {
         List<(int Code, string Value)> pairs = ReadPairs(filePath);
         var document = ParseDocument(pairs);
 
-        var candidates = new List<List<Point2D>>();
-        var segments = new List<(Point2D A, Point2D B)>();
+        var candidates = new List<DxfPolygonReader.LayerPolygonCandidate>();
+        var segmentsByLayer = new Dictionary<string, List<(Point2D A, Point2D B)>>(StringComparer.OrdinalIgnoreCase);
         var exploded = new List<BlockItem>();
         var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -27,18 +27,30 @@ internal static class AsciiDxfParser
             switch (item)
             {
                 case PolyItem poly:
-                    DxfPolygonReader.AddIfPolygon(candidates, poly.Points, poly.IsClosed);
+                    DxfPolygonReader.AddIfPolygon(candidates, poly.Points, poly.IsClosed, poly.Layer);
                     break;
                 case LineItem line:
                     if (line.A.DistanceTo(line.B) > DxfPolygonReader.EndpointTolerance)
-                        segments.Add((line.A, line.B));
+                    {
+                        if (!segmentsByLayer.TryGetValue(line.Layer, out List<(Point2D, Point2D)>? bucket))
+                        {
+                            bucket = [];
+                            segmentsByLayer[line.Layer] = bucket;
+                        }
+
+                        bucket.Add((line.A, line.B));
+                    }
+
                     break;
             }
         }
 
-        List<Point2D>? fromLines = DxfPolygonReader.TryBuildPolygonFromSegments(segments);
-        if (fromLines is not null)
-            candidates.Add(fromLines);
+        foreach ((string layer, List<(Point2D A, Point2D B)> segments) in segmentsByLayer)
+        {
+            List<Point2D>? fromLines = DxfPolygonReader.TryBuildPolygonFromSegments(segments);
+            if (fromLines is not null)
+                candidates.Add(new DxfPolygonReader.LayerPolygonCandidate(fromLines, layer));
+        }
 
         return candidates;
     }
@@ -79,7 +91,6 @@ internal static class AsciiDxfParser
                     CommitInsert(fields, target);
                     break;
                 case "POLYLINE":
-                    // Vertices are committed on SEQEND.
                     break;
             }
 
@@ -91,7 +102,11 @@ internal static class AsciiDxfParser
         void FlushPolyline()
         {
             if (!skipPolyline && polyVertices.Count >= 3)
-                target.Add(new PolyItem([.. polyVertices], polyClosed));
+            {
+                string layer = fields.TryGetValue(8, out string? layerName) ? layerName : "0";
+                target.Add(new PolyItem([.. polyVertices], polyClosed, layer));
+            }
+
             polyVertices.Clear();
             polyClosed = false;
             skipPolyline = false;
@@ -164,6 +179,7 @@ internal static class AsciiDxfParser
                     polyVertices.Clear();
                     polyClosed = false;
                     skipPolyline = false;
+                    fields.Clear();
                     continue;
                 }
 
@@ -192,6 +208,9 @@ internal static class AsciiDxfParser
                     int flags = ParseInt(value);
                     polyClosed = (flags & 1) != 0;
                     skipPolyline = (flags & 16) != 0 || (flags & 64) != 0;
+                    break;
+                case "POLYLINE":
+                    fields[code] = value;
                     break;
                 case "VERTEX" when code == 10:
                     vx = ParseDouble(value);
@@ -228,7 +247,8 @@ internal static class AsciiDxfParser
         if (vertices.Count < 3)
             return;
         int flags = fields.TryGetValue(70, out string? flagText) ? ParseInt(flagText) : 0;
-        target.Add(new PolyItem([.. vertices], (flags & 1) != 0));
+        string layer = fields.TryGetValue(8, out string? layerName) ? layerName : "0";
+        target.Add(new PolyItem([.. vertices], (flags & 1) != 0, layer));
     }
 
     private static void CommitLine(Dictionary<int, string> fields, List<BlockItem> target)
@@ -237,7 +257,11 @@ internal static class AsciiDxfParser
             return;
         if (!fields.TryGetValue(11, out string? x2) || !fields.TryGetValue(21, out string? y2))
             return;
-        target.Add(new LineItem(new Point2D(ParseDouble(x1), ParseDouble(y1)), new Point2D(ParseDouble(x2), ParseDouble(y2))));
+        string layer = fields.TryGetValue(8, out string? layerName) ? layerName : "0";
+        target.Add(new LineItem(
+            new Point2D(ParseDouble(x1), ParseDouble(y1)),
+            new Point2D(ParseDouble(x2), ParseDouble(y2)),
+            layer));
     }
 
     private static void CommitInsert(Dictionary<int, string> fields, List<BlockItem> target)
@@ -249,7 +273,8 @@ internal static class AsciiDxfParser
         double sx = fields.TryGetValue(41, out string? sxs) ? ParseDouble(sxs) : 1;
         double sy = fields.TryGetValue(42, out string? sys) ? ParseDouble(sys) : 1;
         double rot = fields.TryGetValue(50, out string? rs) ? ParseDouble(rs) : 0;
-        target.Add(new InsertItem(name.Trim(), new Point2D(x, y), rot, sx, sy));
+        string layer = fields.TryGetValue(8, out string? layerName) ? layerName : "0";
+        target.Add(new InsertItem(name.Trim(), new Point2D(x, y), rot, sx, sy, layer));
     }
 
     private static void Explode(
@@ -266,10 +291,10 @@ internal static class AsciiDxfParser
         switch (item)
         {
             case PolyItem poly:
-                output.Add(new PolyItem(poly.Points.Select(transform.Apply).ToList(), poly.IsClosed));
+                output.Add(new PolyItem(poly.Points.Select(transform.Apply).ToList(), poly.IsClosed, poly.Layer));
                 break;
             case LineItem line:
-                output.Add(new LineItem(transform.Apply(line.A), transform.Apply(line.B)));
+                output.Add(new LineItem(transform.Apply(line.A), transform.Apply(line.B), line.Layer));
                 break;
             case InsertItem insert:
                 if (!blocks.TryGetValue(insert.Name, out List<BlockItem>? children))
@@ -337,9 +362,9 @@ internal static class AsciiDxfParser
     }
 
     private abstract record BlockItem;
-    private sealed record PolyItem(List<Point2D> Points, bool IsClosed) : BlockItem;
-    private sealed record LineItem(Point2D A, Point2D B) : BlockItem;
-    private sealed record InsertItem(string Name, Point2D Position, double RotationDegrees, double ScaleX, double ScaleY) : BlockItem;
+    private sealed record PolyItem(List<Point2D> Points, bool IsClosed, string Layer) : BlockItem;
+    private sealed record LineItem(Point2D A, Point2D B, string Layer) : BlockItem;
+    private sealed record InsertItem(string Name, Point2D Position, double RotationDegrees, double ScaleX, double ScaleY, string Layer) : BlockItem;
 
     private readonly struct Transform2D
     {

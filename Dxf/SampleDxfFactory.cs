@@ -1,6 +1,7 @@
 using DxfCompare.Comparison;
 using netDxf;
 using netDxf.Entities;
+using netDxf.Tables;
 using Point2D = DxfCompare.Geometry.Point2D;
 
 namespace DxfCompare.Dxf;
@@ -56,15 +57,45 @@ public static class SampleDxfFactory
         Save(Path.Combine(directory, "rect-edge-top-2mm.dxf"),
             EdgeServiceApplicator.Apply(Rectangle100x50, new EdgeServiceConfig { Top = 2 }));
 
+        SaveMultiLayer(Path.Combine(directory, "multi-layer-3.dxf"),
+            ("LAYER1", OtherShape),
+            ("LAYER2", LShape),
+            ("LAYER3", Transform(OtherShape, 0, 30, 0, false, false)));
+        Save(Path.Combine(directory, "single-layer-shape.dxf"), LShape, "0");
+        Save(Path.Combine(directory, "single-layer-shape-flipped.dxf"),
+            Transform(LShape, 0, 0, 0, flipX: true, flipY: false), "0");
+
         return directory;
     }
 
-    public static void Save(string path, IReadOnlyList<Point2D> points)
+    public static void Save(string path, IReadOnlyList<Point2D> points, string layerName = "0")
     {
         var doc = new DxfDocument();
+        Layer layer = EnsureLayer(doc, layerName);
         var vertexes = points.Select(p => new Polyline2DVertex(p.X, p.Y)).ToList();
-        doc.Entities.Add(new Polyline2D(vertexes, isClosed: true));
+        var polyline = new Polyline2D(vertexes, isClosed: true) { Layer = layer };
+        doc.Entities.Add(polyline);
         doc.Save(path);
+    }
+
+    public static void SaveMultiLayer(string path, params (string Layer, IReadOnlyList<Point2D> Points)[] layers)
+    {
+        var doc = new DxfDocument();
+        foreach ((string layerName, IReadOnlyList<Point2D> points) in layers)
+        {
+            Layer layer = EnsureLayer(doc, layerName);
+            var vertexes = points.Select(p => new Polyline2DVertex(p.X, p.Y)).ToList();
+            doc.Entities.Add(new Polyline2D(vertexes, isClosed: true) { Layer = layer });
+        }
+
+        doc.Save(path);
+    }
+
+    private static Layer EnsureLayer(DxfDocument doc, string layerName)
+    {
+        return doc.Layers.Contains(layerName)
+            ? doc.Layers[layerName]
+            : doc.Layers.Add(new Layer(layerName));
     }
 
     public static void SaveR12(string path, IReadOnlyList<Point2D> points)

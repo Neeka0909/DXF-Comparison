@@ -11,7 +11,8 @@ public static class Program
     private static readonly string[] ValueOptions =
     [
         "--tolerance", "--width", "--height", "--size-tolerance", "--write-samples", "-w",
-        "--edge-service", "--edge-top", "--edge-bottom", "--edge-left", "--edge-right"
+        "--edge-service", "--edge-top", "--edge-bottom", "--edge-left", "--edge-right",
+        "--reference-layer", "--layer", "--candidate-layer", "--list-layers"
     ];
 
     public static int Main(string[] args)
@@ -46,6 +47,12 @@ public static class Program
             return 0;
         }
 
+        string? listLayersFile = GetOptionValue(args, "--list-layers");
+        if (listLayersFile is not null)
+        {
+            return ListLayersCommand(listLayersFile);
+        }
+
         List<string> positional = GetPositionals(args);
         if (positional.Count is not (2 or 4))
         {
@@ -77,8 +84,11 @@ public static class Program
         string referencePath = Path.GetFullPath(positional[0]);
         string candidatePath = Path.GetFullPath(positional[1]);
 
-        List<Point2D> rawReference = DxfPolygonReader.ReadPrimaryPolygon(referencePath);
-        List<Point2D> rawCandidate = DxfPolygonReader.ReadPrimaryPolygon(candidatePath);
+        string? referenceLayer = GetOptionValue(args, "--reference-layer", "--layer");
+        string? candidateLayer = GetOptionValue(args, "--candidate-layer");
+
+        List<Point2D> rawReference = DxfPolygonReader.ReadPolygon(referencePath, referenceLayer);
+        List<Point2D> rawCandidate = DxfPolygonReader.ReadPolygon(candidatePath, candidateLayer);
 
         List<Point2D> baseReference = PolygonComparer.Normalize(rawReference);
         List<Point2D> compareReference = edgeService.IsActive
@@ -122,12 +132,33 @@ public static class Program
         }
 
         if (json)
-            PrintJson(referencePath, candidatePath, result, size, edgeService);
+            PrintJson(referencePath, candidatePath, result, size, edgeService, referenceLayer, candidateLayer);
         else
-            PrintText(referencePath, candidatePath, result, size, edgeService);
+            PrintText(referencePath, candidatePath, result, size, edgeService, referenceLayer, candidateLayer);
 
         bool ok = result.IsMatch && (!size.Checked || size.Passed);
         return ok ? 0 : 1;
+    }
+
+    private static int ListLayersCommand(string filePath)
+    {
+        string fullPath = Path.GetFullPath(filePath);
+        IReadOnlyList<DxfLayerSummary> layers = DxfPolygonReader.ListLayers(fullPath);
+        if (layers.Count == 0)
+        {
+            Console.WriteLine($"No layers with closed polygon geometry in: {fullPath}");
+            return 0;
+        }
+
+        Console.WriteLine($"Layers in: {fullPath}");
+        Console.WriteLine(new string('-', 50));
+        foreach (DxfLayerSummary layer in layers)
+        {
+            Console.WriteLine(
+                $"{layer.Name,-20}  polylines={layer.PolylineCount,-3}  closed={layer.HasClosedPolygon}");
+        }
+
+        return 0;
     }
 
     private static bool TryParseEdgeService(string[] args, out EdgeServiceConfig config, out string? error)
@@ -287,12 +318,18 @@ public static class Program
         string candidatePath,
         ComparisonResult result,
         SizeCheck size,
-        EdgeServiceConfig edgeService)
+        EdgeServiceConfig edgeService,
+        string? referenceLayer,
+        string? candidateLayer)
     {
         Console.WriteLine("DXF polygon comparison");
         Console.WriteLine(new string('-', 40));
         Console.WriteLine($"Reference : {referencePath}");
+        if (!string.IsNullOrWhiteSpace(referenceLayer))
+            Console.WriteLine($"Ref layer : {referenceLayer}");
         Console.WriteLine($"Candidate : {candidatePath}");
+        if (!string.IsNullOrWhiteSpace(candidateLayer))
+            Console.WriteLine($"Cand layer: {candidateLayer}");
         Console.WriteLine($"Result    : {OverallLabel(result, size)}");
         Console.WriteLine($"Vertices  : {result.VertexCount}");
         if (edgeService.IsActive)
@@ -319,12 +356,16 @@ public static class Program
         string candidatePath,
         ComparisonResult result,
         SizeCheck size,
-        EdgeServiceConfig edgeService)
+        EdgeServiceConfig edgeService,
+        string? referenceLayer,
+        string? candidateLayer)
     {
         var payload = new
         {
             reference = referencePath,
+            referenceLayer,
             candidate = candidatePath,
+            candidateLayer,
             match = result.IsMatch && (!size.Checked || size.Passed),
             shapeMatch = result.IsMatch,
             vertexCount = result.VertexCount,
@@ -443,6 +484,7 @@ public static class Program
 
         failed += RunSizeSelfTests(reference, Path.Combine(dir, "rotated-90.dxf"));
         failed += RunEdgeServiceSelfTests(dir);
+        failed += RunLayerSelfTests(dir);
 
         Console.WriteLine();
         Console.WriteLine(failed == 0 ? "All tests passed." : $"{failed} tests failed.");
@@ -542,6 +584,51 @@ public static class Program
         return failed;
     }
 
+    private static int RunLayerSelfTests(string dir)
+    {
+        int failed = 0;
+        string multi = Path.Combine(dir, "multi-layer-3.dxf");
+        string single = Path.Combine(dir, "single-layer-shape.dxf");
+
+        IReadOnlyList<DxfLayerSummary> layers = DxfPolygonReader.ListLayers(multi);
+        bool layerCountOk = layers.Count >= 3;
+        if (!layerCountOk)
+            failed++;
+        Console.WriteLine($"{(layerCountOk ? "PASS" : "FAIL"),-4} {"list-layers-count",-26} found={layers.Count}");
+
+        // Layer 2 has the L-shape; layer 1 has a different shape.
+        List<Point2D> refLayer2 = DxfPolygonReader.ReadPolygon(multi, "LAYER2");
+        List<Point2D> cand = DxfPolygonReader.ReadPolygon(single);
+        ComparisonResult match = PolygonComparer.Compare(refLayer2, cand);
+        bool layerMatchOk = match.IsMatch;
+        if (!layerMatchOk)
+            failed++;
+        Console.WriteLine($"{(layerMatchOk ? "PASS" : "FAIL"),-4} {"layer2-vs-single",-26} match={match.IsMatch}");
+
+        try
+        {
+            DxfPolygonReader.ReadPolygon(multi, "LAYER1");
+            List<Point2D> layer1 = DxfPolygonReader.ReadPolygon(multi, "LAYER1");
+            List<Point2D> layer2 = DxfPolygonReader.ReadPolygon(multi, "LAYER2");
+            bool wrongLayerOk = !PolygonComparer.Compare(layer1, cand).IsMatch;
+            if (!wrongLayerOk)
+                failed++;
+            Console.WriteLine($"{(wrongLayerOk ? "PASS" : "FAIL"),-4} {"layer1-not-shape",-26} different={wrongLayerOk}");
+
+            bool sameLayer2 = PolygonComparer.Compare(layer2, cand).IsMatch;
+            if (!sameLayer2)
+                failed++;
+            Console.WriteLine($"{(sameLayer2 ? "PASS" : "FAIL"),-4} {"layer2-is-shape",-26} match={sameLayer2}");
+        }
+        catch (Exception ex)
+        {
+            failed++;
+            Console.WriteLine($"FAIL layer-tests               {ex.Message}");
+        }
+
+        return failed;
+    }
+
     private static bool AnglesClose(double actual, double expected)
     {
         double delta = Math.Abs(actual - expected) % 360.0;
@@ -560,6 +647,8 @@ public static class Program
                 continue;
 
             string option = arg.Contains('=') ? arg[..arg.IndexOf('=')] : arg;
+            if (option == "--list-layers")
+                continue;
             if (ValueOptions.Contains(option))
             {
                 if (!arg.Contains('=') && i + 1 < args.Length && !args[i + 1].StartsWith('-'))
@@ -615,13 +704,16 @@ public static class Program
 
             Usage:
               DxfCompare <reference.dxf> <candidate.dxf> [width height]
-              DxfCompare <reference.dxf> <candidate.dxf> --edge-service 2
-              DxfCompare <reference.dxf> <candidate.dxf> --edge-top 2
+              DxfCompare <reference.dxf> <candidate.dxf> --reference-layer LAYER2
+              DxfCompare --list-layers <file.dxf>
               DxfCompare --write-samples [folder]
               DxfCompare --self-test
               DxfCompare --help
 
             Options:
+              --reference-layer, --layer <name>  Layer to read from reference DXF
+              --candidate-layer <name>           Layer to read from candidate DXF (optional)
+              --list-layers <file.dxf>           List layers that contain closed polygons
               --edge-service <n>    Edge service on all sides (top, bottom, left, right)
               --edge-top <n>        Edge service on top side only
               --edge-bottom <n>     Edge service on bottom side
@@ -638,9 +730,10 @@ public static class Program
               Reference DXF is the base shape. Edge service expands it outward before comparing
               to the candidate DXF (which should already include edge service).
 
-              Example: base 100 x 50 mm
-                --edge-service 2        => expected 104 x 54 mm (2 mm on every side)
-                --edge-top 2            => expected 100 x 52 mm (2 mm on top only)
+            Layers:
+              When the reference DXF has shapes on multiple layers, use --reference-layer to pick
+              which layer to compare. Use --list-layers to see available layers.
+              The candidate DXF can stay single-layer (no --candidate-layer needed).
 
             Exit codes:
               0  shapes match (and size matches when validated)
