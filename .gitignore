@@ -1,3 +1,6 @@
 bin/
 obj/
 *.user
+scripts/_generated_dxf/
+scripts/__pycache__/
+web/__pycache__/
