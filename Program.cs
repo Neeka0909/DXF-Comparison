@@ -482,6 +482,17 @@ public static class Program
                 $"{(ok ? "PASS" : "FAIL"),-4} {"r12-vs-r12-rot90",-26} match={result.IsMatch,-5} flip={result.FlipSide,-11} rot={result.RotationDegreesCcw,7:0.##}°  {result.TransformSummary}");
         }
 
+        {
+            string rectPath = Path.Combine(dir, "rect-100x50.dxf");
+            List<Point2D> a = DxfPolygonReader.ReadPrimaryPolygon(rectPath);
+            ComparisonResult result = PolygonComparer.Compare(a, a);
+            bool ok = result.IsMatch && !result.IsFlipped && AnglesClose(result.RotationDegreesCcw, 0);
+            if (!ok)
+                failed++;
+            Console.WriteLine(
+                $"{(ok ? "PASS" : "FAIL"),-4} {"rect vs self",-26} match={result.IsMatch,-5} flip={result.FlipSide,-11} rot={result.RotationDegreesCcw,7:0.##}°  {result.TransformSummary}");
+        }
+
         failed += RunSizeSelfTests(reference, Path.Combine(dir, "rotated-90.dxf"));
         failed += RunEdgeServiceSelfTests(dir);
         failed += RunLayerSelfTests(dir);

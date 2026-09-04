@@ -288,7 +288,9 @@ public static class PolygonComparer
         if (candidate.IsFlipped == current.IsFlipped)
             return candidateAbs < currentAbs ? candidate : current;
 
-        return current.IsFlipped ? current : candidate;
+        // Same shape can match both ways (rectangles, regular polygons). Prefer
+        // no flip unless a mirror fit is clearly better (handled above by error).
+        return current.IsFlipped ? candidate : current;
     }
 
     private static ComparisonResult ToResult(CandidateFit fit, int vertexCount)

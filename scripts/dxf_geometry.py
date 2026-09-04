@@ -337,7 +337,9 @@ def _better(current: CandidateFit | None, candidate: CandidateFit) -> CandidateF
     candidate_abs = abs(_smallest_signed_degrees(_to_degrees(candidate.rotation_radians)))
     if candidate.is_flipped == current.is_flipped:
         return candidate if candidate_abs < current_abs else current
-    return current if current.is_flipped else candidate
+    # Same outline can match both ways (rectangles, regular polygons). Prefer
+    # no flip unless a mirror fit is clearly better (handled above by error).
+    return candidate if current.is_flipped else current
 
 
 def _to_result(fit: CandidateFit, vertex_count: int) -> ComparisonResult:
@@ -1057,6 +1059,19 @@ def run_self_test(samples_dir: str | Path) -> int:
         status = "PASS" if ok else "FAIL"
         print(
             f"{status:<4} {name:<26} match={result.is_match!s:<5} "
+            f"flip={result.flip_side:<11} rot={result.rotation_degrees_ccw:7.2f}°  "
+            f"{result.transform_summary}"
+        )
+
+    rect = samples_dir / "rect-100x50.dxf"
+    if rect.is_file():
+        result = compare_dxf_files(rect, rect)
+        ok = result.is_match and not result.is_flipped and _angles_close(result.rotation_degrees_ccw, 0)
+        if not ok:
+            failed += 1
+        status = "PASS" if ok else "FAIL"
+        print(
+            f"{status:<4} {'rect vs self':<26} match={result.is_match!s:<5} "
             f"flip={result.flip_side:<11} rot={result.rotation_degrees_ccw:7.2f}°  "
             f"{result.transform_summary}"
         )
